@@ -1,6 +1,6 @@
 /*
   Door Guardian System
-  2016.07.22 YWJamesLin@OpenNCU
+  Created by YWJamesLin@OpenNCU on 2016.07
 */
 #include <stdlib.h>
 #include <string.h>
@@ -8,11 +8,18 @@
 #include <SPI.h>
 #include <Ethernet.h>
 
-#include "definition.h"
 #include <IPTransformer.h>
 #include <Keypad.h>
 #include <Keypad_I2C.h>
 #include <LiquidCrystal_I2C.h>
+
+//#define production
+
+#ifdef production
+#include ".sec/definition.h"
+#else
+#include "definition.h"
+#endif
 
 const byte ROWS = 4; //four rows
 const byte COLS = 4; //four columns
@@ -89,39 +96,59 @@ void keyInput () {
     key = kpd.getKey();
     if (key) {
       switch (key) {
+        //Input '.'
         case 'F' :
           lcd.print ('.');
           input[length] = '.';
           ++ length;
           break;
+        //Reset screen but not the existing string
         case 'E' :
           lcd.begin (16, 2);
           lcd.clear ();
           lcd.setCursor (0, 0);
           lcd.println (messages[phase]);
           lcd.setCursor (0, 1);
-          for(i = 0; i < length; ++ i) {
+          for (i = 0; i < length; ++ i) {
             lcd.print (input[i]);
           }
           delay (500);
           break;
+        //Delete (from left to right)
         case 'D' :
+          if (length) {
+            for (i = 1; i < length; ++ i) {
+              input[i - 1] = input[i];
+            }
+            -- length;
+            lcd.clear ();
+            lcd.setCursor (0, 0);
+            lcd.println (messages[phase]);
+            lcd.setCursor (0, 1);
+            for (i = 0; i < length; ++ i) {
+              lcd.print (input[i]);
+            }
+          }
           break;
+        //Clear all
         case 'C' :
           LCDInit (messages[phase]);
           break;
+        //Backspace (delete from right to left)
         case 'B' :
           if (length) {
-            length -= 1;
+            -- length;
             lcd.setCursor (length, 1);
             lcd.print (' ');
             lcd.setCursor (length, 1);
           }
           break;
+        //Accept
         case 'A' :
           input[length] = '\0';
           quit = true;
           break;
+        //Input digits
         default :
           if (length != 16) {
             input[length] = key;
@@ -142,7 +169,7 @@ void loop() {
   LCDInit (messages[phase]);
   keyInput ();
   if (strcmp (input, pwd) == 0) {
-    //Input IP phase
+    //Input IP Address Phase
     phase = 1;
     quit = false;
     while (! quit) {
@@ -160,6 +187,7 @@ void loop() {
       }
     }
 
+    // Input DNS Address Phase
     phase = 2;
     quit = false;
     while (! quit) {
@@ -177,6 +205,7 @@ void loop() {
       }
     }
 
+    //Input Gateway Address Phase
     phase = 3;
     quit = false;
     while (! quit) {
@@ -194,6 +223,7 @@ void loop() {
       }
     }
 
+    //Input Subnet Mask Address Phase
     phase = 4;
     quit = false;
     while (! quit) {
