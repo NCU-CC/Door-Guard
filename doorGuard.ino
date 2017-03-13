@@ -1,22 +1,26 @@
 /*
-  Door Guardian System
-  Created by YWJamesLin@OpenNCU on 2016.07
-*/
+   Door Guardian System
+   Created by YWJamesLin@OpenNCU on 2017.02
+ */
+
 #include <stdlib.h>
 #include <string.h>
 #include <Wire.h>
 #include <SPI.h>
 #include <Ethernet.h>
 
-#include <IPTransformer.h>
 #include <Keypad.h>
 #include <Keypad_I2C.h>
 #include <LiquidCrystal_I2C.h>
+#include <PN532_HSU.h>
+#include <snep.h>
+#include <NdefMessage.h>
 
-//#define production
+
+#define production
 
 #ifdef production
-#include ".sec/definition.h"
+#include "definition_prod.h"
 #else
 #include "definition.h"
 #endif
@@ -33,88 +37,90 @@ byte rowPins[ROWS] = {4, 5, 6, 7}; //connect to the row pinouts of the keypad
 byte colPins[COLS] = {0, 1, 2, 3}; //connect to the column pinouts of the keypad
 
 Keypad_I2C kpd (makeKeymap(keys), rowPins, colPins, ROWS, COLS, KBI2CAddr, PCF8574);
+
 LiquidCrystal_I2C lcd (LCDI2CAddr, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
 
-char key;
-char messages[5][10] = {"INPUT:", "IP:", "DNS:", "GATEWAY:", "SUBNET:"};
-char input[17];
-char reply[200];
+PN532_HSU pn532hsu (Serial1);
+SNEP nfc (pn532hsu);
+
+char messages[4][16] = {"Door Guard", "Input:", "Find NFC device", "Receiving code"};
+char openmsg[6] = "Open!";
+char wrongmsg[6] = "Wrong";
+char errormsg[6] = "Error";
+char conerrmsg[17] = "Connection Error";
+char timeoutmsg[8] = "TimeOut";
+
+char input[17], request[50], reply[13], status[4], code[6];
+
 int length, i, phase, time;
+char key;
 boolean quit;
 
-IPTransformer IPT;
+EthernetClient client, logClient;
 
-int newIP[4], newDNS[4], newGateway[4], newSubnet[4], newServer[4];
+NdefMessage message;
+NdefRecord tempRecord;
+int messageSize, ndefSize, recordSize, payloadSize;
+uint8_t ndefBuf[128];
+byte tempArr[100];
 
-IPAddress *ip, *dnsAddr, *gateway, *subnet, *server;
-
-EthernetClient client;
-
-char request[100] = "";
-char host[100] = "";
-
-void triggerDoor () {
-  digitalWrite (relayTriggerPin, HIGH);
-  delay (200);
-  digitalWrite (relayTriggerPin, LOW);
+void printStr (char* str) {
+  int i;
+  for (i = 0; str[i] != '\0'; ++ i) {
+    lcd.print (str[i]);
+  }
 }
 
+//init LCD with initMessage
 void LCDInit (char* initMessage) {
   lcd.clear ();
   lcd.setCursor (0, 0);
-  lcd.println (initMessage);
+  printStr (initMessage);
   lcd.setCursor (0, 1);
-  length = 0;
   delay (500);
 }
 
-void setup() {
-  IPT.IPStrToInt (newIP, ipStr);
-  IPT.IPStrToInt (newDNS, dnsStr);
-  IPT.IPStrToInt (newGateway, gwStr);
-  IPT.IPStrToInt (newSubnet, snStr);
-  IPT.IPStrToInt (newServer, srvStr);
-
-  ip = new IPAddress(newIP[0], newIP[1], newIP[2], newIP[3]);
-  dnsAddr = new IPAddress (newDNS[0], newDNS[1], newDNS[2], newDNS[3]);
-  gateway = new IPAddress (newGateway[0], newGateway[1], newGateway[2], newGateway[3]);
-  subnet = new IPAddress (newSubnet[0], newSubnet[1], newSubnet[2], newSubnet[3]);
-  server = new IPAddress (newServer[0], newServer[1], newServer[2], newServer[3]);
-
-Wire.begin ();
-  kpd.begin (makeKeymap (keys));
-  Serial.begin (115200);
-  Ethernet.begin (mac, *ip, *dnsAddr, *gateway, *subnet);
-  lcd.begin (16, 2);
-  lcd.backlight ();
-  pinMode (relayTriggerPin, OUTPUT);
+void LCDInit () {
+  lcd.clear ();
+  lcd.setCursor (0, 0);
+  delay (500);
 }
 
+// trigger the relay to open the entity
+void triggerDoor (int doorN) {
+  digitalWrite (relayTriggerPin[doorN], HIGH);
+  delay (200);
+  digitalWrite (relayTriggerPin[doorN], LOW);
+  LCDInit (openmsg);
+}
+
+//get input from KeyPad
 void keyInput () {
+  int i;
+  length = 0;
   quit = false;
   while (! quit) {
     key = kpd.getKey();
     if (key) {
       switch (key) {
-        //Input '.'
+        // back to the main
         case 'F' :
-          lcd.print ('.');
-          input[length] = '.';
-          ++ length;
+          length = 0;
+          quit = true;
           break;
-        //Reset screen but not the existing string
+          //Reset screen but not the existing string
         case 'E' :
           lcd.begin (16, 2);
           lcd.clear ();
           lcd.setCursor (0, 0);
-          lcd.println (messages[phase]);
+          printStr (messages[phase]);
           lcd.setCursor (0, 1);
           for (i = 0; i < length; ++ i) {
             lcd.print (input[i]);
           }
           delay (500);
           break;
-        //Delete (from left to right)
+          //Delete (from left to right)
         case 'D' :
           if (length) {
             for (i = 1; i < length; ++ i) {
@@ -123,18 +129,19 @@ void keyInput () {
             -- length;
             lcd.clear ();
             lcd.setCursor (0, 0);
-            lcd.println (messages[phase]);
+            printStr (messages[phase]);
             lcd.setCursor (0, 1);
             for (i = 0; i < length; ++ i) {
               lcd.print (input[i]);
             }
           }
           break;
-        //Clear all
+          //Clear all
         case 'C' :
+          length = 0;
           LCDInit (messages[phase]);
           break;
-        //Backspace (delete from right to left)
+          //Backspace (delete from right to left)
         case 'B' :
           if (length) {
             -- length;
@@ -143,12 +150,12 @@ void keyInput () {
             lcd.setCursor (length, 1);
           }
           break;
-        //Accept
+          //Accept
         case 'A' :
           input[length] = '\0';
           quit = true;
           break;
-        //Input digits
+          //Input digits
         default :
           if (length != 16) {
             input[length] = key;
@@ -163,115 +170,154 @@ void keyInput () {
   quit = false;
 }
 
-void loop() {
-  // INPUT Password Phase
+// check whether input is a number string
+int checkInput (char* input, int length) {
+  for (int i = 0; i < length ; ++ i) {
+    if (input[i] < 48 || input[i] > 57) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+// send entityUUID and receive code
+void beamData () {
+  int j;
+  length = 0;
+  message = NdefMessage ();
+  message.addMimeMediaRecord (mimeType, entityUUID);
+  messageSize = message.getEncodedSize ();
+  message.encode (ndefBuf);
+  if (nfc.write (ndefBuf, messageSize, 15000) > 0) {
+    delay (2000);
+    phase = 3;
+    LCDInit (messages[phase]);
+    for (j = 0; j < 5; ++ j) {
+      ndefSize = nfc.read (ndefBuf, messageSize, 5000);
+      if (ndefSize > 0) {
+        message = NdefMessage (ndefBuf, ndefSize);
+        recordSize = message.getRecordCount ();
+        for (i = 0; i < recordSize; ++ i) {
+          tempRecord = message.getRecord (i);
+          payloadSize = tempRecord.getPayloadLength ();
+          if (payloadSize > 0) {
+            tempRecord.getPayload (tempArr);
+            strncpy (input, (const char *)(tempArr + payloadSize - 5), 5);
+            if (checkInput (input, 5)) {
+              length = 5;
+              break;
+            }
+          }
+        }
+      }
+      if (length == 5) {
+        break;
+      }
+    }
+  }
+}
+
+//connect to the server to verify the input
+void verify () {
+  input [length] = '\0';
+  client.connect (byteSrv, 80);
+  if ( ! client.connected ()) {
+    LCDInit (conerrmsg);
+  } else {
+    while (client.available ()) { client.read (); }
+    snprintf (code, sizeof(code), "%s", input);
+    snprintf (request, sizeof (request), "GET %s%s HTTP/1.1", query, code);
+    client.println (request);
+    snprintf (request, sizeof (request), "Host: %s", serverStr);
+    client.println (request);
+
+    client.println ("Connection: close");
+    client.println ();
+    client.flush ();
+    delay (500);
+
+    time = 0;
+    while ( ! client.available () && time != 3) {
+      delay (250);
+      ++ time;
+    }
+    if ( ! client.available ()) {
+      LCDInit (timeoutmsg);
+    } else {
+      length = 0;
+      while (client.available () && length != 12) {
+        reply[length] = client.read ();
+        ++ length;
+      }
+      reply[length] = '\0';
+      if (strstr (reply, "204") != NULL) {
+        triggerDoor (0);
+        snprintf (status, sizeof (status), "204");
+      } else if (strstr (reply, "404") != NULL) {
+        LCDInit (wrongmsg);
+        snprintf (status, sizeof (status), "404");
+      } else if (strstr (reply, "500")) {
+        LCDInit (errormsg);
+        snprintf (status, sizeof (status), "500");
+      } else {
+        LCDInit (errormsg);
+        snprintf (status, sizeof (status), "999");
+      }
+      client.stop ();
+      length = 0;
+
+      if (strcmp (status, "999") != 0) {
+        logClient.connect (byteSrv, 7070);
+
+        logClient.print ("GET /entityLog/");
+        logClient.print (status);
+        logClient.print ("/");
+        logClient.print (code);
+        logClient.println (" HTTP/1.1");
+        logClient.println ();
+        logClient.println ("Connection: close");
+        logClient.println ();
+        logClient.flush ();
+        logClient.stop ();
+      }
+    }
+  }
+}
+void setup () {
+  //initialize KeyPad, LCD and backlight, Ethernet
+  Wire.begin ();
+  kpd.begin ();
+  lcd.begin (16, 2);
+  lcd.backlight ();
+  Ethernet.begin (mac, byteIP, byteDNS, byteGW, byteSN);
+
+  //initalize the relay pin
+  for (i = 0; i < relayNum; ++ i) {
+    pinMode (relayTriggerPin[i], OUTPUT);
+  }
+
+  //start main phase
   phase = 0;
   LCDInit (messages[phase]);
-  keyInput ();
-  if (strcmp (input, pwd) == 0) {
-    //Input IP Address Phase
-    phase = 1;
-    quit = false;
-    while (! quit) {
+}
+
+void loop () {
+  key = kpd.getKey ();
+  if (key == 'C' || key == 'F') {
+    if (key == 'F') {
+      //get into input phase
+      phase = 1;
       LCDInit (messages[phase]);
       keyInput ();
-      if (IPT.IPCheck (input)) {
-        IPT.IPStrToInt (newIP, input);
-        quit = true;
-        for (i = 0; i < 4; ++ i) {
-          if ( ! IPT.IPRangeCheck (newIP[i])) {
-            quit = false;
-            break;
-          }
-        }
-      }
-    }
-
-    // Input DNS Address Phase
-    phase = 2;
-    quit = false;
-    while (! quit) {
+    } else if (key == 'C') {
+      //get into NFC reading phase
+      phase = 2;
       LCDInit (messages[phase]);
-      keyInput ();
-      if (IPT.IPCheck (input)) {
-        IPT.IPStrToInt (newDNS, input);
-        quit = true;
-        for (i = 0; i < 4; ++ i) {
-          if ( ! IPT.IPRangeCheck (newDNS[i])) {
-            quit = false;
-            break;
-          }
-        }
-      }
+      beamData ();
     }
-
-    //Input Gateway Address Phase
-    phase = 3;
-    quit = false;
-    while (! quit) {
-      LCDInit (messages[phase]);
-      keyInput ();
-      if (IPT.IPCheck (input)) {
-        IPT.IPStrToInt (newGateway, input);
-        quit = true;
-        for (i = 0; i < 4; ++ i) {
-          if ( ! IPT.IPRangeCheck (newGateway[i])) {
-            quit = false;
-            break;
-          }
-        }
-      }
-    }
-
-    //Input Subnet Mask Address Phase
-    phase = 4;
-    quit = false;
-    while (! quit) {
-      LCDInit (messages[phase]);
-      keyInput ();
-      if (IPT.IPCheck (input)) {
-        IPT.IPStrToInt (newSubnet, input);
-        quit = true;
-        for (i = 0; i < 4; ++ i) {
-          if ( ! IPT.IPRangeCheck (newSubnet[i])) {
-            quit = false;
-            break;
-          }
-        }
-      }
-    }
-
-    free (ip);
-    free (dnsAddr);
-    free (gateway);
-    free (subnet);
-
-    ip = new IPAddress (newIP[0], newIP[1], newIP[2], newIP[3]);
-    dnsAddr = new IPAddress (newDNS[0], newDNS[1], newDNS[2], newDNS[3]);
-    gateway = new IPAddress (newGateway[0], newGateway[1], newGateway[2], newGateway[3]);
-    subnet = new IPAddress (newSubnet[0], newSubnet[1], newSubnet[2], newSubnet[3]);
-
-    Ethernet.begin (mac, *ip, *dnsAddr, *gateway, *subnet);
-  } else {
-    if (client.connect (*server, 80)) {
-      sprintf (request, "GET %s%s HTTP/1.0", query, input);
-      client.println (request);
-      sprintf (host, "Host: %s", srvStr);
-      client.println (host);
-      client.println ("Connection: close");
-      client.println ();
-    }
-    sprintf (reply, "");
-    length = 0;
-    while (client.connected () && length != 199) {
-      key = client.read ();
-      reply[length] = key;
-      ++ length;
-    }
-    reply[length] = '\0';
-    if (strstr (reply, "204") != NULL) {
-      triggerDoor ();
-    }
-    client.stop ();
+    //verify input and back to the main phase
+    if (length) { verify (); }
+    phase = 0;
+    LCDInit (messages[phase]);
   }
 }
