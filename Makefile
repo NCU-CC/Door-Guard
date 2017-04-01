@@ -9,10 +9,9 @@ BOOTLOADER_PARENT = /usr/local/share/arduino/hardware/arduino/avr/bootloaders
 USER_LIB_PATH = /home/ywjameslin/Arduino/libraries
 
 ARCHITECTURE  = avr
-BOARD_TAG     = mega
-BOARD_SUB     = atmega2560
+BOARD_TAG     = uno
 ARDUINO_PORT = /dev/ttyACM0
-ARDUINO_LIBS = Wire SPI Ethernet IPTransformer LiquidCrystal_I2C Keypad Keypad_I2C NDEF PN532_HSU PN532
+ARDUINO_LIBS = Wire SPI Ethernet LiquidCrystal_I2C Keypad Keypad_I2C
 ARDUINO_VERSION = 10801
 
 include /usr/local/share/arduino-mk/Arduino.mk

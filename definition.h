@@ -19,9 +19,7 @@ byte byteSrv[4] = {25, 2, 5, 2};
 char serverStr[] = "25.2.5.2";
 
 char query[] = "/love/arrow/shoot/";
-char mimeType[] = "word/something/xopowo";
-char entityUUID[] = "yosoro-bubu-zura-yohane";
 
 //multidoor feature door relay pin
-const int relayNum = 1;
-int relayTriggerPin[relayNum] = {9};
+const int relayNum = 4;
+int relayTriggerPin[relayNum] = {9, 8, 7, 6};

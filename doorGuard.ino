@@ -12,9 +12,6 @@
 #include <Keypad.h>
 #include <Keypad_I2C.h>
 #include <LiquidCrystal_I2C.h>
-#include <PN532_HSU.h>
-#include <snep.h>
-#include <NdefMessage.h>
 
 
 #define production
@@ -40,10 +37,7 @@ Keypad_I2C kpd (makeKeymap(keys), rowPins, colPins, ROWS, COLS, KBI2CAddr, PCF85
 
 LiquidCrystal_I2C lcd (LCDI2CAddr, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
 
-PN532_HSU pn532hsu (Serial1);
-SNEP nfc (pn532hsu);
-
-char messages[4][16] = {"Door Guard", "Input:", "Find NFC device", "Receiving code"};
+char messages[2][16] = {"Door Guard", "Input:"};
 char openmsg[6] = "Open!";
 char wrongmsg[6] = "Wrong";
 char errormsg[6] = "Error";
@@ -52,17 +46,11 @@ char timeoutmsg[8] = "TimeOut";
 
 char input[17], request[50], reply[13], status[4], code[6];
 
-int length, i, phase, time;
+int length, i, phase, time, inpLen;
 char key;
 boolean quit;
 
 EthernetClient client, logClient;
-
-NdefMessage message;
-NdefRecord tempRecord;
-int messageSize, ndefSize, recordSize, payloadSize;
-uint8_t ndefBuf[128];
-byte tempArr[100];
 
 void printStr (char* str) {
   int i;
@@ -86,11 +74,12 @@ void LCDInit () {
   delay (500);
 }
 
-// trigger the relay to open the entity
 void triggerDoor (int doorN) {
-  digitalWrite (relayTriggerPin[doorN], HIGH);
-  delay (200);
-  digitalWrite (relayTriggerPin[doorN], LOW);
+  if (doorN > -1) {
+    digitalWrite (relayTriggerPin[doorN], HIGH);
+    delay (200);
+    digitalWrite (relayTriggerPin[doorN], LOW);
+  }
   LCDInit (openmsg);
 }
 
@@ -105,8 +94,6 @@ void keyInput () {
       switch (key) {
         // back to the main
         case 'F' :
-          length = 0;
-          quit = true;
           break;
           //Reset screen but not the existing string
         case 'E' :
@@ -170,64 +157,19 @@ void keyInput () {
   quit = false;
 }
 
-// check whether input is a number string
-int checkInput (char* input, int length) {
-  for (int i = 0; i < length ; ++ i) {
-    if (input[i] < 48 || input[i] > 57) {
-      return 0;
-    }
-  }
-  return 1;
-}
-
-// send entityUUID and receive code
-void beamData () {
-  int j;
-  length = 0;
-  message = NdefMessage ();
-  message.addMimeMediaRecord (mimeType, entityUUID);
-  messageSize = message.getEncodedSize ();
-  message.encode (ndefBuf);
-  if (nfc.write (ndefBuf, messageSize, 15000) > 0) {
-    delay (2000);
-    phase = 3;
-    LCDInit (messages[phase]);
-    for (j = 0; j < 5; ++ j) {
-      ndefSize = nfc.read (ndefBuf, messageSize, 5000);
-      if (ndefSize > 0) {
-        message = NdefMessage (ndefBuf, ndefSize);
-        recordSize = message.getRecordCount ();
-        for (i = 0; i < recordSize; ++ i) {
-          tempRecord = message.getRecord (i);
-          payloadSize = tempRecord.getPayloadLength ();
-          if (payloadSize > 0) {
-            tempRecord.getPayload (tempArr);
-            strncpy (input, (const char *)(tempArr + payloadSize - 5), 5);
-            if (checkInput (input, 5)) {
-              length = 5;
-              break;
-            }
-          }
-        }
-      }
-      if (length == 5) {
-        break;
-      }
-    }
-  }
-}
-
-//connect to the server to verify the input
 void verify () {
   input [length] = '\0';
+  inpLen = length;
   client.connect (byteSrv, 80);
   if ( ! client.connected ()) {
     LCDInit (conerrmsg);
   } else {
     while (client.available ()) { client.read (); }
     snprintf (code, sizeof(code), "%s", input);
+
     snprintf (request, sizeof (request), "GET %s%s HTTP/1.1", query, code);
     client.println (request);
+
     snprintf (request, sizeof (request), "Host: %s", serverStr);
     client.println (request);
 
@@ -251,7 +193,11 @@ void verify () {
       }
       reply[length] = '\0';
       if (strstr (reply, "204") != NULL) {
-        triggerDoor (0);
+        if (inpLen == 5) {
+          triggerDoor (0);
+        } else {
+          triggerDoor (input[5] - 49);
+        }
         snprintf (status, sizeof (status), "204");
       } else if (strstr (reply, "404") != NULL) {
         LCDInit (wrongmsg);
@@ -283,10 +229,11 @@ void verify () {
     }
   }
 }
-void setup () {
+
+void setup() {
   //initialize KeyPad, LCD and backlight, Ethernet
   Wire.begin ();
-  kpd.begin ();
+  kpd.begin (makeKeymap (keys));
   lcd.begin (16, 2);
   lcd.backlight ();
   Ethernet.begin (mac, byteIP, byteDNS, byteGW, byteSN);
@@ -297,27 +244,17 @@ void setup () {
   }
 
   //start main phase
-  phase = 0;
+  phase = 1;
   LCDInit (messages[phase]);
 }
 
-void loop () {
-  key = kpd.getKey ();
-  if (key == 'C' || key == 'F') {
-    if (key == 'F') {
-      //get into input phase
-      phase = 1;
-      LCDInit (messages[phase]);
-      keyInput ();
-    } else if (key == 'C') {
-      //get into NFC reading phase
-      phase = 2;
-      LCDInit (messages[phase]);
-      beamData ();
-    }
-    //verify input and back to the main phase
-    if (length) { verify (); }
-    phase = 0;
+void loop() {
+  keyInput ();
+
+  //verify input and back to the main phase
+  if (length) {
+    verify ();
+    phase = 1;
     LCDInit (messages[phase]);
   }
 }
