@@ -8,6 +8,7 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <Ethernet.h>
+#include <avr/wdt.h>
 
 #include <Keypad.h>
 #include <Keypad_I2C.h>
@@ -21,6 +22,8 @@
 #else
 #include "definition.h"
 #endif
+
+#define COUNT_LIMIT 2000
 
 const byte ROWS = 4; //four rows
 const byte COLS = 4; //four columns
@@ -44,9 +47,9 @@ char errormsg[6] = "Error";
 char conerrmsg[17] = "Connection Error";
 char timeoutmsg[8] = "TimeOut";
 
-char input[17], request[50], reply[13], status[4], code[6];
+char input[17], request[50], reply[13], code[6];
 
-int length, i, phase, time, inpLen;
+int length, i, phase, time, inpLen, count;
 char key;
 boolean quit;
 
@@ -88,7 +91,17 @@ void keyInput () {
   int i;
   length = 0;
   quit = false;
+    
+  count = 0;
+  wdt_reset ();
+
   while (! quit) {
+    ++ count;
+    if (count == COUNT_LIMIT) {
+      count = 0;
+      wdt_reset ();
+    }
+
     key = kpd.getKey();
     if (key) {
       switch (key) {
@@ -158,6 +171,9 @@ void keyInput () {
 }
 
 void verify () {
+  count = 0;
+  wdt_reset ();
+
   input [length] = '\0';
   inpLen = length;
   client.connect (byteSrv, 80);
@@ -198,34 +214,13 @@ void verify () {
         } else {
           triggerDoor (input[5] - 49);
         }
-        snprintf (status, sizeof (status), "204");
       } else if (strstr (reply, "404") != NULL) {
         LCDInit (wrongmsg);
-        snprintf (status, sizeof (status), "404");
-      } else if (strstr (reply, "500")) {
-        LCDInit (errormsg);
-        snprintf (status, sizeof (status), "500");
       } else {
         LCDInit (errormsg);
-        snprintf (status, sizeof (status), "999");
       }
       client.stop ();
       length = 0;
-
-      if (strcmp (status, "999") != 0) {
-        logClient.connect (byteSrv, 7070);
-
-        logClient.print ("GET /entityLog/");
-        logClient.print (status);
-        logClient.print ("/");
-        logClient.print (code);
-        logClient.println (" HTTP/1.1");
-        logClient.println ();
-        logClient.println ("Connection: close");
-        logClient.println ();
-        logClient.flush ();
-        logClient.stop ();
-      }
     }
   }
 }
@@ -246,6 +241,8 @@ void setup() {
   //start main phase
   phase = 1;
   LCDInit (messages[phase]);
+
+  wdt_enable (WDTO_8S);
 }
 
 void loop() {
