@@ -8,6 +8,7 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <Ethernet.h>
+#include <avr/wdt.h>
 
 #include <Keypad.h>
 #include <Keypad_I2C.h>
@@ -24,6 +25,8 @@
 #else
 #include "definition.h"
 #endif
+
+#define COUNT_LIMIT 2000
 
 const byte ROWS = 4; //four rows
 const byte COLS = 4; //four columns
@@ -43,7 +46,7 @@ LiquidCrystal_I2C lcd (LCDI2CAddr, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
 PN532_HSU pn532hsu (Serial1);
 SNEP nfc (pn532hsu);
 
-char messages[4][16] = {"Door Guard", "Input:", "Find NFC device", "Receiving code"};
+char messages[4][16] = {DOORNAME, "Input:", "Find NFC device", "Receiving code"};
 char openmsg[6] = "Open!";
 char wrongmsg[6] = "Wrong";
 char errormsg[6] = "Error";
@@ -52,7 +55,7 @@ char timeoutmsg[8] = "TimeOut";
 
 char input[17], request[50], reply[13], status[4], code[6];
 
-int length, i, phase, time;
+int length, i, phase, time, count;
 char key;
 boolean quit;
 
@@ -97,9 +100,20 @@ void triggerDoor (int doorN) {
 //get input from KeyPad
 void keyInput () {
   int i;
+  char key;
   length = 0;
   quit = false;
+
+  count = 0;
+  wdt_reset ();
+
   while (! quit) {
+    ++ count;
+    if (count == COUNT_LIMIT) {
+      count = 0;
+      wdt_reset ();
+    }
+
     key = kpd.getKey();
     if (key) {
       switch (key) {
@@ -167,7 +181,6 @@ void keyInput () {
       }
     }
   }
-  quit = false;
 }
 
 // check whether input is a number string
@@ -184,16 +197,20 @@ int checkInput (char* input, int length) {
 void beamData () {
   int j;
   length = 0;
+
+  count = 0;
+  wdt_reset ();
+
   message = NdefMessage ();
   message.addMimeMediaRecord (mimeType, entityUUID);
   messageSize = message.getEncodedSize ();
   message.encode (ndefBuf);
-  if (nfc.write (ndefBuf, messageSize, 15000) > 0) {
-    delay (2000);
+  if (nfc.write (ndefBuf, messageSize, 5000) > 0) {
     phase = 3;
     LCDInit (messages[phase]);
     for (j = 0; j < 5; ++ j) {
-      ndefSize = nfc.read (ndefBuf, messageSize, 5000);
+      wdt_reset ();
+      ndefSize = nfc.read (ndefBuf, messageSize, 2500);
       if (ndefSize > 0) {
         message = NdefMessage (ndefBuf, ndefSize);
         recordSize = message.getRecordCount ();
@@ -219,6 +236,9 @@ void beamData () {
 
 //connect to the server to verify the input
 void verify () {
+  count = 0;
+  wdt_reset ();
+
   input [length] = '\0';
   client.connect (byteSrv, 80);
   if ( ! client.connected ()) {
@@ -252,37 +272,17 @@ void verify () {
       reply[length] = '\0';
       if (strstr (reply, "204") != NULL) {
         triggerDoor (0);
-        snprintf (status, sizeof (status), "204");
       } else if (strstr (reply, "404") != NULL) {
         LCDInit (wrongmsg);
-        snprintf (status, sizeof (status), "404");
-      } else if (strstr (reply, "500")) {
-        LCDInit (errormsg);
-        snprintf (status, sizeof (status), "500");
       } else {
         LCDInit (errormsg);
-        snprintf (status, sizeof (status), "999");
       }
       client.stop ();
       length = 0;
-
-      if (strcmp (status, "999") != 0) {
-        logClient.connect (byteSrv, 7070);
-
-        logClient.print ("GET /entityLog/");
-        logClient.print (status);
-        logClient.print ("/");
-        logClient.print (code);
-        logClient.println (" HTTP/1.1");
-        logClient.println ();
-        logClient.println ("Connection: close");
-        logClient.println ();
-        logClient.flush ();
-        logClient.stop ();
-      }
     }
   }
 }
+
 void setup () {
   //initialize KeyPad, LCD and backlight, Ethernet
   Wire.begin ();
@@ -299,25 +299,45 @@ void setup () {
   //start main phase
   phase = 0;
   LCDInit (messages[phase]);
+
+  wdt_enable (WDTO_8S);
+  count = 0;
 }
 
 void loop () {
+  ++ count;
+  if (count == COUNT_LIMIT) {
+    count = 0;
+    wdt_reset ();
+  }
+
   key = kpd.getKey ();
-  if (key == 'C' || key == 'F') {
-    if (key == 'F') {
-      //get into input phase
-      phase = 1;
-      LCDInit (messages[phase]);
-      keyInput ();
-    } else if (key == 'C') {
-      //get into NFC reading phase
+  switch (key) {
+    case 'C' :
+      count = 0;
       phase = 2;
       LCDInit (messages[phase]);
       beamData ();
-    }
-    //verify input and back to the main phase
+      break;
+    case 'F' :
+      count = 0;
+      phase = 1;
+      LCDInit (messages[phase]);
+      keyInput ();
+      break;
+    case 'E' :
+      lcd.begin (16, 2);
+      lcd.clear ();
+      lcd.setCursor (0, 0);
+      printStr (messages[phase]);
+      break;
+  }
+  if (key == 'C' || key == 'F') {
     if (length) { verify (); }
     phase = 0;
     LCDInit (messages[phase]);
+    
+    count = 0;
+    wdt_reset ();
   }
 }

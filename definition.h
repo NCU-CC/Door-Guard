@@ -4,6 +4,7 @@
 //Predefinition
 #define LCDI2CAddr 0x3f
 #define KBI2CAddr 0x38
+#define DOORNAME "Door Guard"
 
 //  Ethernet Config 
 byte mac[] = {

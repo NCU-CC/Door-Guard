@@ -12,7 +12,7 @@ ARCHITECTURE  = avr
 BOARD_TAG     = mega
 BOARD_SUB     = atmega2560
 ARDUINO_PORT = /dev/ttyACM0
-ARDUINO_LIBS = Wire SPI Ethernet IPTransformer LiquidCrystal_I2C Keypad Keypad_I2C NDEF PN532_HSU PN532
+ARDUINO_LIBS = Wire SPI Ethernet LiquidCrystal_I2C Keypad Keypad_I2C NDEF PN532_HSU PN532
 ARDUINO_VERSION = 10801
 
 include /usr/local/share/arduino-mk/Arduino.mk
